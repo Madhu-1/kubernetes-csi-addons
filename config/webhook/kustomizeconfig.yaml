@@ -14,5 +14,21 @@ namespace:
   path: webhooks/clientConfig/service/namespace
   create: true
 
+# This configuration is for teaching kustomize how to update name ref and var
+# substitution
+nameReference:
+- kind: Issuer
+  group: cert-manager.io
+  fieldSpecs:
+  - kind: Certificate
+    group: cert-manager.io
+    path: spec/issuerRef/name
+
 varReference:
 - path: metadata/annotations
+- kind: Certificate
+  group: cert-manager.io
+  path: spec/commonName
+- kind: Certificate
+  group: cert-manager.io
+  path: spec/dnsNames
