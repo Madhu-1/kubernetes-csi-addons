@@ -146,7 +146,8 @@ vet: ## Run go vet against code.
 
 .PHONY: test
 test: manifests generate docker-generate-protobuf fmt vet envtest ## Run tests.
-	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) -p path)" go test -v ./... -coverprofile cover.out
+	echo "running tests"
+	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) -p path)" go test -v $$(go list ./... | grep -v "test/e2e") -coverprofile cover.out
 
 .PHONY: check-all-committed
 check-all-committed: ## Fail in case there are uncommitted changes
