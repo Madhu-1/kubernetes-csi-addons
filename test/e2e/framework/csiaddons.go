@@ -19,6 +19,7 @@ package framework
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	ginkgo "github.com/onsi/ginkgo/v2"
@@ -468,6 +469,31 @@ func (f *Framework) WaitForNetworkFenceResult(name string, expectedResult csiadd
 	})
 
 	gomega.Expect(err).NotTo(gomega.HaveOccurred(), fmt.Sprintf("NetworkFence did not reach result %s in time", expectedResult))
+	return nf
+}
+
+// WaitForNetworkFenceMessage waits for a NetworkFence to have a specific message in its status
+func (f *Framework) WaitForNetworkFenceMessage(name string, expectedMessage string) *csiaddonsv1alpha1.NetworkFence {
+	ginkgo.By(fmt.Sprintf("Waiting for NetworkFence %s to have message containing %q", name, expectedMessage))
+
+	nf := &csiaddonsv1alpha1.NetworkFence{}
+	ctx, cancel := context.WithTimeout(context.Background(), f.GetTimeout("operation"))
+	defer cancel()
+
+	err := wait.PollUntilContextTimeout(ctx, 2*time.Second, f.GetTimeout("operation"), true, func(ctx context.Context) (bool, error) {
+		err := f.Client.Get(ctx, client.ObjectKey{
+			Name:      name,
+			Namespace: f.GetNamespaceName(),
+		}, nf)
+		if err != nil {
+			return false, err
+		}
+		// Check if the message contains the expected substring and the result is Succeeded
+		return nf.Status.Result == csiaddonsv1alpha1.FencingOperationResultSucceeded &&
+			strings.Contains(nf.Status.Message, expectedMessage), nil
+	})
+
+	gomega.Expect(err).NotTo(gomega.HaveOccurred(), fmt.Sprintf("NetworkFence did not have message containing %q in time", expectedMessage))
 	return nf
 }
 

@@ -10,12 +10,16 @@ kubeconfig: ""
 reportDir: "_output/e2e-reports"
 
 # Namespace to run tests in
+# When set, all E2E tests will use this single namespace across all test runs
+# The namespace will be created if it doesn't exist and reused if it does
+# If empty, a unique namespace will be generated for each test run
 namespace: "csi-addons-e2e"
 
-# Delete namespace after tests complete
+# Delete namespace after all tests complete (happens in AfterAll)
 deleteNamespace: true
 
-# Delete namespace even if tests fail
+# Delete resources (but not namespace) even if individual tests fail
+# Set to false to preserve resources for debugging
 deleteNamespaceOnFailure: false
 
 # Global timeout for all tests

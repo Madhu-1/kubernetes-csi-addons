@@ -122,7 +122,7 @@ func (f *Framework) setupNamespace() {
 
 	if f.namespaceName == "" {
 		// Generate a random namespace name
-		f.namespaceName = fmt.Sprintf("csiaddons-e2e-%s", uuid.NewString())
+		f.namespaceName = fmt.Sprintf("%s-%s", f.BaseName, uuid.NewString())
 	}
 
 	ns := &corev1.Namespace{
@@ -180,22 +180,37 @@ func (f *Framework) Cleanup() {
 		}
 	}
 
-	// Delete namespace if configured
-	if f.Namespace != nil && f.Config.DeleteNamespace {
-		ginkgo.By(fmt.Sprintf("Deleting namespace %s", f.Namespace.Name))
-		err := f.Client.Delete(ctx, f.Namespace)
-		if err != nil && !apierrors.IsNotFound(err) {
-			ginkgo.By(fmt.Sprintf("Warning: Failed to delete namespace: %v", err))
-		}
-	}
+	// Clear the created resources list after cleanup
+	f.CreatedResources = []client.Object{}
+
+	// Note: Namespace is NOT deleted here - it should be deleted in AfterAll
+	// to allow reuse across multiple tests in the same suite
 }
 
 // CleanupOnFailure cleans up resources on test failure
 func (f *Framework) CleanupOnFailure() {
 	if f.Config.DeleteNamespaceOnFailure {
-		f.Cleanup()
+		// Clean up resources but not the namespace (namespace cleanup happens in AfterAll)
+		ginkgo.By(fmt.Sprintf("Cleaning up resources on failure for %s", f.BaseName))
+		ctx, cancel := context.WithTimeout(context.Background(), f.Config.Timeout)
+		defer cancel()
+
+		// Delete created resources in reverse order
+		for i := len(f.CreatedResources) - 1; i >= 0; i-- {
+			resource := f.CreatedResources[i]
+			kind := resource.GetObjectKind().GroupVersionKind().Kind
+			if kind == "" {
+				kind = fmt.Sprintf("%T", resource)
+			}
+			ginkgo.By(fmt.Sprintf("Deleting %s/%s", kind, resource.GetName()))
+			err := f.Client.Delete(ctx, resource)
+			if err != nil && !apierrors.IsNotFound(err) {
+				ginkgo.By(fmt.Sprintf("Warning: Failed to delete resource: %v", err))
+			}
+		}
+		f.CreatedResources = []client.Object{}
 	} else {
-		ginkgo.By(fmt.Sprintf("Skipping cleanup on failure, namespace %s preserved for debugging", f.namespaceName))
+		ginkgo.By(fmt.Sprintf("Skipping cleanup on failure, resources in namespace %s preserved for debugging", f.namespaceName))
 	}
 }
 

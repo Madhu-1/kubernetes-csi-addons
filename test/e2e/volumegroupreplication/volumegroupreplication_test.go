@@ -27,6 +27,7 @@ import (
 	gomega "github.com/onsi/gomega"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -55,20 +56,34 @@ func TestVolumeGroupReplication(t *testing.T) {
 	ginkgo.RunSpecs(t, "VolumeGroupReplication E2E Suite")
 }
 
-var _ = ginkgo.Describe("VolumeGroupReplication", func() {
+var _ = ginkgo.Describe("VolumeGroupReplication", ginkgo.Ordered, func() {
 	var (
 		f *framework.Framework
 	)
 
-	ginkgo.BeforeEach(func() {
+	ginkgo.BeforeAll(func() {
 		f = framework.NewFramework("volumegroupreplication-e2e")
 	})
 
 	ginkgo.AfterEach(func() {
+		// Only cleanup resources created in each test, not the namespace
 		if ginkgo.CurrentSpecReport().Failed() {
 			f.CleanupOnFailure()
 		} else {
 			f.Cleanup()
+		}
+	})
+
+	ginkgo.AfterAll(func() {
+		// Cleanup namespace after all tests complete
+		if f != nil && f.Namespace != nil && f.Config.DeleteNamespace {
+			ginkgo.By(fmt.Sprintf("Deleting namespace %s after all tests", f.Namespace.Name))
+			ctx, cancel := context.WithTimeout(context.Background(), f.Config.Timeout)
+			defer cancel()
+			err := f.Client.Delete(ctx, f.Namespace)
+			if err != nil && !apierrors.IsNotFound(err) {
+				ginkgo.By(fmt.Sprintf("Warning: Failed to delete namespace: %v", err))
+			}
 		}
 	})
 
