@@ -313,21 +313,21 @@ verify_mirroring_health() {
 
 	# Wait for mirroring to be healthy (timeout after 180 seconds)
 	timeout 180 bash -c "
-		until kubectl -n \"${NAMESPACE}\" exec \"${TOOLBOX_POD}\" -- rbd mirror pool status ${POOL_NAME} --format=json | jq -e '.summary.health == \"OK\"' > /dev/null 2>&1; do
+		until kubectl -n \"${NAMESPACE}\" exec \"${TOOLBOX_POD}\" -- rbd mirror pool status "${POOL_NAME}" --format=json | jq -e '.summary.health == \"OK\"' > /dev/null 2>&1; do
 			echo \"Waiting for mirroring health to be OK in ${NAMESPACE}...\"
-			kubectl -n \"${NAMESPACE}\" exec \"${TOOLBOX_POD}\" -- rbd mirror pool status ${POOL_NAME} || true
+			kubectl -n \"${NAMESPACE}\" exec \"${TOOLBOX_POD}\" -- rbd mirror pool status "${POOL_NAME}" || true
 			sleep 5
 		done
 	"
 
 	if [ $? -eq 124 ]; then
 		echo "ERROR: Timeout waiting for mirroring health to be OK in ${NAMESPACE}"
-		kubectl -n "${NAMESPACE}" exec "${TOOLBOX_POD}" -- rbd mirror pool status ${POOL_NAME} || true
+		kubectl -n "${NAMESPACE}" exec "${TOOLBOX_POD}" -- rbd mirror pool status "${POOL_NAME}" || true
 		return 1
 	fi
 
 	echo "Mirroring health is OK in ${NAMESPACE}"
-	kubectl -n "${NAMESPACE}" exec "${TOOLBOX_POD}" -- rbd mirror pool status ${POOL_NAME}
+	kubectl -n "${NAMESPACE}" exec "${TOOLBOX_POD}" -- rbd mirror pool status "${POOL_NAME}"
 }
 
 ########
