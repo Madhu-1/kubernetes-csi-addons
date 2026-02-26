@@ -776,7 +776,7 @@ var _ = ginkgo.Describe("VolumeGroupReplication", ginkgo.Ordered, func() {
 
 			ginkgo.By("Waiting for PVCs to be bound")
 			pvc1 = f.WaitForPVCBound(pvc1.Name)
-			pvc2 = f.WaitForPVCBound(pvc2.Name)
+			f.WaitForPVCBound(pvc2.Name)
 
 			ginkgo.By("Creating VolumeGroupReplication in primary state")
 			vgr := createVolumeGroupReplication(f, "test-vgr-pvc-delete-primary", vgrc.Name, vrc.Name, groupLabel, replicationv1alpha1.Primary)
@@ -843,7 +843,7 @@ var _ = ginkgo.Describe("VolumeGroupReplication", ginkgo.Ordered, func() {
 
 			ginkgo.By("Waiting for PVCs to be bound")
 			pvc1 = f.WaitForPVCBound(pvc1.Name)
-			pvc2 = f.WaitForPVCBound(pvc2.Name)
+			f.WaitForPVCBound(pvc2.Name)
 
 			ginkgo.By("Creating VolumeGroupReplication in secondary state")
 			vgr := createVolumeGroupReplication(f, "test-vgr-pvc-delete-secondary", vgrc.Name, vrc.Name, groupLabel, replicationv1alpha1.Secondary)
