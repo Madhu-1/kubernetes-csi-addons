@@ -131,7 +131,10 @@ jobs:
           --timeout=5m
 
       - name: Run e2e tests
-        run: make test-e2e
+        run: |
+          export KUBECONFIG=$HOME/.kube/config
+          echo $HOME/.kube/config
+          make test-e2e
 
       - name: Capture debug info on failure
         if: failure()
