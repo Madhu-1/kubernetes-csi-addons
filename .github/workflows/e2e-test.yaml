@@ -193,4 +193,13 @@ jobs:
             kubectl logs "$pod" -n rook-ceph --all-containers=true --tail=100 || true
           done
 
+          echo "--- csi addons resources ---"
+          kubectl get encryptionkeyrotationjobs,encryptionkeyrotationcronjobs,reclaimspacecronjobs,reclaimspacejobs,networkfences,networkfenceclasses -A -oyaml
+
+          echo "--- csi addons controller logs ---"
+          for pod in $(kubectl get po -n csi-addons-system -o jsonpath='{.items[*].metadata.name}' 2>/dev/null || true); do
+            echo "--- Logs for pod: $pod ---"
+            kubectl logs "$pod" -n rook-ceph --all-containers=true --tail=100 || true
+          done
+
           echo "=== Debug information capture complete ==="
