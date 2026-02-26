@@ -94,7 +94,7 @@ jobs:
       - name: enable mirroring between clusters
         shell: bash --noprofile --norc -eo pipefail -x {0}
         run: |
-          test/e2e/scripts/ceph/github-action-helper.sh enable_mirroring_cluster1 rook-ceph rook-ceph-secondary
+          test/e2e/scripts/ceph/github-action-helper.sh enable_mirroring_cluster rook-ceph rook-ceph-secondary
 
       - name: Build controller container image
         uses: docker/build-push-action@v6

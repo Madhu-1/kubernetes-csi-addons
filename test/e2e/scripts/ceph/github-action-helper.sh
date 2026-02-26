@@ -132,6 +132,7 @@ function deploy_first_ceph_cluster() {
 	kubectl_retry create -f common.yaml
 	kubectl_retry create -f operator.yaml
 	kubectl_retry create -f csi-operator.yaml
+	yq e -i 'select(.kind != "CephBlockPool")' csi/rbd/storageclass-test.yaml
 	kubectl_retry create -f csi/rbd/storageclass-test.yaml
 
 	yq w -i -d0 cluster-test.yaml spec.dashboard.enabled false
@@ -225,7 +226,7 @@ timeout_command_exit_code() {
 #   $1 -> primary namespace (e.g. rook-ceph)
 #   $2 -> secondary namespace (e.g. rook-ceph-secondary)
 #######################################
-enable_mirroring_cluster1() {
+enable_mirroring_cluster() {
 	local PRIMARY_NS="$1"
 	local SECONDARY_NS="$2"
 	local POOL_NAME="replicapool"
@@ -277,10 +278,56 @@ enable_mirroring_cluster1() {
 
 	kubectl_retry create --namespace="${PRIMARY_NS}" -f peer-secret.yaml
 
-	echo "Registering peer secret on secondary cluster..."
+	echo "Registering peer secret on primary cluster..."
 
 	kubectl_retry patch -n "${PRIMARY_NS}" cephblockpool ${POOL_NAME} --type merge \
 		-p "{\"spec\":{\"mirroring\":{\"peers\":{\"secretNames\":[\"pool-peer-token-${POOL_NAME}-config\"]}}}}"
+
+	echo "Verifying mirroring health on both clusters..."
+	verify_mirroring_health "${PRIMARY_NS}" "${POOL_NAME}"
+	verify_mirroring_health "${SECONDARY_NS}" "${POOL_NAME}"
+}
+
+#######################################
+# Verify mirroring health for a pool
+# Arguments:
+#   $1 -> namespace (e.g. rook-ceph or rook-ceph-secondary)
+#   $2 -> pool name (e.g. replicapool)
+#######################################
+verify_mirroring_health() {
+	local NAMESPACE="$1"
+	local POOL_NAME="$2"
+	local TOOLBOX_POD
+
+	echo "Checking mirroring health in namespace ${NAMESPACE}..."
+
+	# Get the toolbox pod name
+	TOOLBOX_POD=$(kubectl -n "${NAMESPACE}" get pod -l app=rook-ceph-tools -o jsonpath='{.items[0].metadata.name}')
+
+	if [ -z "${TOOLBOX_POD}" ]; then
+		echo "ERROR: Toolbox pod not found in namespace ${NAMESPACE}"
+		return 1
+	fi
+
+	echo "Using toolbox pod: ${TOOLBOX_POD}"
+
+	# Wait for mirroring to be healthy (timeout after 180 seconds)
+	timeout 180 bash -c "
+		until kubectl -n \"${NAMESPACE}\" exec \"${TOOLBOX_POD}\" -- rbd mirror pool status ${POOL_NAME} --format=json | jq -e '.summary.health == \"OK\"' > /dev/null 2>&1; do
+			echo \"Waiting for mirroring health to be OK in ${NAMESPACE}...\"
+			kubectl -n \"${NAMESPACE}\" exec \"${TOOLBOX_POD}\" -- rbd mirror pool status ${POOL_NAME} || true
+			sleep 5
+		done
+	"
+
+	if [ $? -eq 124 ]; then
+		echo "ERROR: Timeout waiting for mirroring health to be OK in ${NAMESPACE}"
+		kubectl -n "${NAMESPACE}" exec "${TOOLBOX_POD}" -- rbd mirror pool status ${POOL_NAME} || true
+		return 1
+	fi
+
+	echo "Mirroring health is OK in ${NAMESPACE}"
+	kubectl -n "${NAMESPACE}" exec "${TOOLBOX_POD}" -- rbd mirror pool status ${POOL_NAME}
 }
 
 ########
