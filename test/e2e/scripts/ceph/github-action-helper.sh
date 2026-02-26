@@ -4,7 +4,7 @@
 
 set -xeEo pipefail
 
-REPO_DIR="/tmp/rook)"
+REPO_DIR="/tmp/rook"
 mkdir -p "${REPO_DIR}"
 
 #############
@@ -24,7 +24,7 @@ fi
 # FUNCTIONS #
 #############
 function install_deps() {
-	sudo wget https://github.com/mikefarah/yq/releases/download/4.47.1/yq_linux_${ARCH_SUFFIX} -O /usr/local/bin/yq
+	sudo wget https://github.com/mikefarah/yq/releases/download/v4.47.1/yq_linux_${ARCH_SUFFIX} -O /usr/local/bin/yq
 	sudo chmod +x /usr/local/bin/yq
 }
 
@@ -37,21 +37,88 @@ function print_k8s_cluster_status() {
 	echo "================================="
 }
 
-# Helper function to retry kubectl commands
+#!/bin/bash
+
+KUBECTL_RETRY=5
+KUBECTL_RETRY_DELAY=10
+
+# kubectl_retry calls `kubectl` with the passed arguments. In case of a
+# failure, the `kubectl` command will be retried for `KUBECTL_RETRY` times,
+# with a delay of `KUBECTL_RETRY_DELAY` between them.
+#
+# Upon creation failures, `AlreadyExists` and `Warning` are ignored, making
+# sure the create succeeds in case some objects were created successfully in a
+# previous try.
+#
+# Upon deletion failures, the same applies as for creation, except that
+# NotFound is ignored.
+#
+# Logs from `kubectl` are passed on to stdout, so that a calling function can
+# capture it. During the function, logs are written to stderr as to not
+# interfere with the log parsing of the calling function.
 function kubectl_retry() {
-	local retries=5
-	local count=0
-	until kubectl "$@"; do
-		exit_code=$?
-		count=$((count + 1))
-		if [ $count -lt $retries ]; then
-			echo "kubectl command failed with exit code $exit_code. Retrying in 5 seconds... (attempt $count/$retries)"
-			sleep 5
-		else
-			echo "kubectl command failed after $retries attempts"
-			return $exit_code
+	local retries=0 action="${1}" ret=0 stdout stderr
+	shift
+
+	# temporary files for kubectl output
+	stdout=$(mktemp kubectl-stdout.XXXXXXXX)
+	stderr=$(mktemp kubectl-stderr.XXXXXXXX)
+
+	while ! (kubectl "${action}" "${@}" 2>"${stderr}" 1>>"${stdout}"); do
+		# write logs to stderr and empty stderr (only)
+		cat "${stdout}" >/dev/stderr
+		cat "${stderr}" >/dev/stderr
+		echo "$(date): 'kubectl_retry ${action} ${*}' try #${retries} failed, checking errors" >/dev/stderr
+
+		# in case of a failure when running "create", ignore errors with "AlreadyExists"
+		if [ "${action}" == 'create' ]; then
+			# count lines in stderr that do not have "AlreadyExists" or "Warning"
+			ret=$(grep -cvw -e 'AlreadyExists' -e '^Warning:' "${stderr}" || true)
+			if [ "${ret}" -eq 0 ]; then
+				# Success! stderr is empty after removing all "AlreadyExists" lines.
+				echo "$(date): 'kubectl_retry ${action} ${*}' succeeded without unknown errors" >/dev/stderr
+				break
+			fi
 		fi
+
+		# in case of a failure when running "delete", ignore errors with "NotFound"
+		if [ "${action}" == 'delete' ]; then
+			# count lines in stderr that do not have "NotFound" or "Warning"
+			ret=$(grep -cvw -e 'NotFound' -e '^Warning:' "${stderr}" || true)
+			if [ "${ret}" -eq 0 ]; then
+				# Success! stderr is empty after removing all "NotFound" lines.
+				echo "$(date): 'kubectl_retry ${action} ${*}' succeeded without unknown errors" >/dev/stderr
+				break
+			fi
+		fi
+
+		retries=$((retries + 1))
+		if [ ${retries} -eq ${KUBECTL_RETRY} ]; then
+			echo "$(date): 'kubectl_retry ${action} ${*}' failed, no more retries left (${retries}/${KUBECTL_RETRY})" >/dev/stderr
+			ret=1
+			break
+		fi
+
+		# empty stderr for the next loop
+		true >"${stderr}"
+		echo "$(date): 'kubectl_retry ${action} ${*}' failed (${retries}/${KUBECTL_RETRY}), will retry in ${KUBECTL_RETRY_DELAY} seconds" >/dev/stderr
+
+		sleep ${KUBECTL_RETRY_DELAY}
+
+		# reset ret so that a next working kubectl does not cause a non-zero
+		# return of the function
+		ret=0
 	done
+
+	echo "$(date): 'kubectl_retry ${action} ${*}' done (ret=${ret})" >/dev/stderr
+
+	# write output so that calling functions can consume it
+	cat "${stdout}" >/dev/stdout
+	cat "${stderr}" >/dev/stderr
+
+	rm -f "${stdout}" "${stderr}"
+
+	return ${ret}
 }
 
 function block_dev() {
@@ -125,9 +192,11 @@ function deploy_first_ceph_cluster() {
 	cd "${REPO_DIR}/deploy/examples"
 
 	yq -i '
-  .data.CSI_ENABLE_CSIADDONS = "true" |
-  .data.ROOK_CSIADDONS_IMAGE = "quay.io/csiaddons/k8s-sidecar:test"
-  ' operator.yaml
+  with(select(.kind == "ConfigMap");
+    .data.CSI_ENABLE_CSIADDONS = "true" |
+	.data.ROOK_CSIADDONS_IMAGE = "quay.io/csiaddons/k8s-sidecar:test" |
+	.data.ROOK_CSI_CEPH_IMAGE = "quay.io/cephcsi/cephcsi:canary"
+  )' operator.yaml
 	kubectl_retry create -f crds.yaml
 	kubectl_retry create -f common.yaml
 	kubectl_retry create -f operator.yaml
@@ -135,9 +204,13 @@ function deploy_first_ceph_cluster() {
 	yq e -i 'select(.kind != "CephBlockPool")' csi/rbd/storageclass-test.yaml
 	kubectl_retry create -f csi/rbd/storageclass-test.yaml
 
-	yq w -i -d0 cluster-test.yaml spec.dashboard.enabled false
-	yq w -i -d0 cluster-test.yaml spec.storage.useAllDevices false
-	yq w -i -d0 cluster-test.yaml spec.storage.deviceFilter "${DEVICE_NAME}"1
+	DEVICE_NAME="$DEVICE_NAME" yq e -i '
+	  with(select(.kind == "CephCluster");
+	    .spec.dashboard.enabled = false |
+	    .spec.storage.useAllDevices = false |
+	    .spec.storage.deviceFilter = strenv(DEVICE_NAME) + "1"
+	  )
+	' cluster-test.yaml
 	kubectl_retry create -f cluster-test.yaml
 	kubectl_retry create -f toolbox.yaml
 	sed -i "/resources:/,/ # priorityClassName:/d" rbdmirror.yaml
@@ -153,14 +226,19 @@ function deploy_second_ceph_cluster() {
 	cd "${REPO_DIR}/deploy/examples"
 	NAMESPACE=rook-ceph-secondary envsubst <common-second-cluster.yaml | kubectl create -f -
 	sed -i 's/namespace: rook-ceph/namespace: rook-ceph-secondary/g' cluster-test.yaml
-	yq w -i -d0 cluster-test.yaml spec.storage.deviceFilter "${DEVICE_NAME}"2
-	yq w -i -d0 cluster-test.yaml spec.dataDirHostPath "/var/lib/rook-external"
+	DEVICE_NAME="$DEVICE_NAME" yq e -i '
+	  with(select(.kind == "CephCluster");
+	    .spec.dataDirHostPath = "/var/lib/rook-external" |
+	    .spec.storage.deviceFilter = strenv(DEVICE_NAME) + "2"
+	  )
+	' cluster-test.yaml
+	cat cluster-test.yaml
 	kubectl_retry create -f cluster-test.yaml
-	yq w -i toolbox.yaml metadata.namespace rook-ceph-secondary
+	yq e -i '.metadata.namespace = "rook-ceph-secondary"' toolbox.yaml
 	kubectl_retry create -f toolbox.yaml
 	sed -i 's/namespace: rook-ceph/namespace: rook-ceph-secondary/g' rbdmirror.yaml
 	kubectl_retry create -f rbdmirror.yaml
-
+	kubectl get cephcluster -A -oyaml
 	wait_for_mon rook-ceph-secondary
 	wait_for_osd_pod_to_be_ready_state rook-ceph-secondary
 }
@@ -193,7 +271,7 @@ wait_for_operator_pod_to_be_ready_state() {
 	timeout 100 bash -c "
 		    until [ \$(kubectl get pod -l app=rook-ceph-operator -n rook-ceph -o custom-columns=READY:status.containerStatuses[*].ready | grep -c true) -eq 1 ]; do
 		      echo \"waiting for the operator to be in ready state\"
-			  kubectl -n \"$namespace\" get po
+			  kubectl -n rook-ceph get po
 		      sleep 1
 		    done
 	"
@@ -230,23 +308,26 @@ enable_mirroring_cluster() {
 	local PRIMARY_NS="$1"
 	local SECONDARY_NS="$2"
 	local POOL_NAME="replicapool"
-
 	cd "${REPO_DIR}/deploy/examples"
 
 	echo "Enabling mirroring on primary cluster (${PRIMARY_NS})..."
 
-	yq w -i pool-test.yaml spec.mirroring.enabled true
-	yq w -i pool-test.yaml spec.mirroring.mode image
-	yq w -i pool-test.yaml metadata.namespace "${PRIMARY_NS}"
+	PRIMARY_NS="$PRIMARY_NS" yq e -i '
+	  .spec.mirroring.enabled = true |
+	  .spec.mirroring.mode = "image" |
+	  .metadata.namespace = strenv(PRIMARY_NS)
+	' pool-test.yaml
 
 	kubectl_retry create -f pool-test.yaml
 
 	echo "Waiting for pool to become Ready on primary cluster..."
 	timeout 180 sh -c "until [ \"\$(kubectl -n ${PRIMARY_NS} get cephblockpool ${POOL_NAME} -o jsonpath='{.status.phase}' | grep -c Ready)\" -eq 1 ]; do sleep 1; done"
 
-	yq w -i pool-test.yaml spec.mirroring.enabled true
-	yq w -i pool-test.yaml spec.mirroring.mode image
-	yq w -i pool-test.yaml metadata.namespace "${SECONDARY_NS}"
+	SECONDARY_NS="$SECONDARY_NS" yq e -i '
+	  .spec.mirroring.enabled = true |
+	  .spec.mirroring.mode = "image" |
+	  .metadata.namespace = strenv(SECONDARY_NS)
+	' pool-test.yaml
 
 	kubectl_retry create -f pool-test.yaml
 
@@ -257,9 +338,9 @@ enable_mirroring_cluster() {
 
 	kubectl_retry -n "${PRIMARY_NS}" get secret pool-peer-token-${POOL_NAME} -o yaml >peer-secret.yaml
 
-	yq delete --inplace peer-secret.yaml metadata.ownerReferences
-	yq write --inplace peer-secret.yaml metadata.namespace "${SECONDARY_NS}"
-	yq write --inplace peer-secret.yaml metadata.name pool-peer-token-${POOL_NAME}-config
+	yq e -i 'del(.metadata.ownerReferences)' peer-secret.yaml
+	SECONDARY_NS="$SECONDARY_NS" yq e -i '.metadata.namespace = strenv(SECONDARY_NS)' peer-secret.yaml
+	POOL_NAME="$POOL_NAME" yq e -i '.metadata.name = "pool-peer-token-" + strenv(POOL_NAME) + "-config"' peer-secret.yaml
 
 	kubectl_retry create --namespace="${SECONDARY_NS}" -f peer-secret.yaml
 
@@ -272,9 +353,9 @@ enable_mirroring_cluster() {
 
 	kubectl_retry -n "${SECONDARY_NS}" get secret pool-peer-token-${POOL_NAME} -o yaml >peer-secret.yaml
 
-	yq delete --inplace peer-secret.yaml metadata.ownerReferences
-	yq write --inplace peer-secret.yaml metadata.namespace "${PRIMARY_NS}"
-	yq write --inplace peer-secret.yaml metadata.name pool-peer-token-${POOL_NAME}-config
+	yq e -i 'del(.metadata.ownerReferences)' peer-secret.yaml
+	PRIMARY_NS="$PRIMARY_NS" yq e -i '.metadata.namespace = strenv(PRIMARY_NS)' peer-secret.yaml
+	POOL_NAME="$POOL_NAME" yq e -i '.metadata.name = "pool-peer-token-" + strenv(POOL_NAME) + "-config"' peer-secret.yaml
 
 	kubectl_retry create --namespace="${PRIMARY_NS}" -f peer-secret.yaml
 
@@ -313,9 +394,9 @@ verify_mirroring_health() {
 
 	# Wait for mirroring to be healthy (timeout after 180 seconds)
 	timeout 180 bash -c "
-		until kubectl -n \"${NAMESPACE}\" exec \"${TOOLBOX_POD}\" -- rbd mirror pool status "${POOL_NAME}" --format=json | jq -e '.summary.health == \"OK\"' > /dev/null 2>&1; do
+		until kubectl -n \"${NAMESPACE}\" exec \"${TOOLBOX_POD}\" -- rbd mirror pool status \"${POOL_NAME}\" --format=json | jq -e '.summary.health == \"OK\"' > /dev/null 2>&1; do
 			echo \"Waiting for mirroring health to be OK in ${NAMESPACE}...\"
-			kubectl -n \"${NAMESPACE}\" exec \"${TOOLBOX_POD}\" -- rbd mirror pool status "${POOL_NAME}" || true
+			kubectl -n \"${NAMESPACE}\" exec \"${TOOLBOX_POD}\" -- rbd mirror pool status \"${POOL_NAME}\" || true
 			sleep 5
 		done
 	"
