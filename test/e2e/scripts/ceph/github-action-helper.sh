@@ -24,7 +24,7 @@ fi
 # FUNCTIONS #
 #############
 function install_deps() {
-	sudo wget https://github.com/mikefarah/yq/releases/download/3.4.1/yq_linux_${ARCH_SUFFIX} -O /usr/local/bin/yq
+	sudo wget https://github.com/mikefarah/yq/releases/download/4.47.1/yq_linux_${ARCH_SUFFIX} -O /usr/local/bin/yq
 	sudo chmod +x /usr/local/bin/yq
 }
 
