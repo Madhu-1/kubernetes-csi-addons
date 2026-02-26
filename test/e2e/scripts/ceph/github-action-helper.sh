@@ -132,6 +132,8 @@ function deploy_first_ceph_cluster() {
 	kubectl_retry create -f common.yaml
 	kubectl_retry create -f operator.yaml
 	kubectl_retry create -f csi-operator.yaml
+	kubectl_retry create -f csi/rbd/storageclass-test.yaml
+
 	yq w -i -d0 cluster-test.yaml spec.dashboard.enabled false
 	yq w -i -d0 cluster-test.yaml spec.storage.useAllDevices false
 	yq w -i -d0 cluster-test.yaml spec.storage.deviceFilter "${DEVICE_NAME}"1

@@ -639,6 +639,363 @@ var _ = ginkgo.Describe("VolumeGroupReplication", ginkgo.Ordered, func() {
 			}, f.GetTimeout("operation"), 2*time.Second).Should(gomega.BeTrue(), "VolumeGroupReplicationContent should be deleted")
 		})
 	})
+
+	ginkgo.Context("VolumeGroupReplication Lifecycle", func() {
+		ginkgo.It("should create VGR in primary state, transition to secondary, back to primary, and delete", func() {
+			ginkgo.By("Getting VolumeGroupReplicationClass configuration")
+			provisioner := f.GetVolumeGroupReplicationProvisioner()
+			gomega.Expect(provisioner).NotTo(gomega.BeEmpty(), "Provisioner must be configured")
+			parameters := f.GetVolumeGroupReplicationParameters()
+
+			ginkgo.By("Creating a VolumeGroupReplicationClass")
+			vgrc := createVolumeGroupReplicationClass(f, "test-vgrc-lifecycle", provisioner, parameters)
+
+			ginkgo.By("Creating a VolumeReplicationClass for individual volumes")
+			vrc := f.CreateVolumeReplicationClass(
+				"test-vrc-lifecycle",
+				f.GetVolumeReplicationProvisioner(),
+				f.GetVolumeReplicationParameters(),
+			)
+
+			ginkgo.By("Creating PVCs with matching labels")
+			groupLabel := "test-group-lifecycle"
+			pvc1 := createPVCWithLabels(f, "test-pvc-lifecycle-1", map[string]string{"replication-group": groupLabel})
+			pvc2 := createPVCWithLabels(f, "test-pvc-lifecycle-2", map[string]string{"replication-group": groupLabel})
+
+			ginkgo.By("Waiting for PVCs to be bound")
+			pvc1 = f.WaitForPVCBound(pvc1.Name)
+			pvc2 = f.WaitForPVCBound(pvc2.Name)
+			gomega.Expect(pvc1.Status.Phase).To(gomega.Equal(corev1.ClaimBound))
+			gomega.Expect(pvc2.Status.Phase).To(gomega.Equal(corev1.ClaimBound))
+
+			ginkgo.By("Creating VolumeGroupReplication in primary state")
+			vgr := createVolumeGroupReplication(f, "test-vgr-lifecycle", vgrc.Name, vrc.Name, groupLabel, replicationv1alpha1.Primary)
+
+			ginkgo.By("Waiting for VolumeGroupReplication to reach primary state")
+			vgr = waitForVolumeGroupReplicationState(f, vgr.Name, replicationv1alpha1.PrimaryState)
+			gomega.Expect(vgr.Status.State).To(gomega.Equal(replicationv1alpha1.PrimaryState))
+			gomega.Expect(vgr.Status.Conditions).NotTo(gomega.BeEmpty(), "VolumeGroupReplication should have conditions")
+
+			ginkgo.By("Updating VolumeGroupReplication to secondary state")
+			vgr.Spec.ReplicationState = replicationv1alpha1.Secondary
+			updateVolumeGroupReplication(f, vgr)
+
+			ginkgo.By("Waiting for VolumeGroupReplication to reach secondary state")
+			vgr = waitForVolumeGroupReplicationState(f, vgr.Name, replicationv1alpha1.SecondaryState)
+			gomega.Expect(vgr.Status.State).To(gomega.Equal(replicationv1alpha1.SecondaryState))
+			gomega.Expect(vgr.Status.Conditions).NotTo(gomega.BeEmpty(), "VolumeGroupReplication should have conditions")
+
+			ginkgo.By("Updating VolumeGroupReplication back to primary state")
+			vgr.Spec.ReplicationState = replicationv1alpha1.Primary
+			updateVolumeGroupReplication(f, vgr)
+
+			ginkgo.By("Waiting for VolumeGroupReplication to reach primary state again")
+			vgr = waitForVolumeGroupReplicationState(f, vgr.Name, replicationv1alpha1.PrimaryState)
+			gomega.Expect(vgr.Status.State).To(gomega.Equal(replicationv1alpha1.PrimaryState))
+
+			ginkgo.By("Deleting VolumeGroupReplication")
+			f.DeleteResource(vgr)
+
+			ginkgo.By("Verifying VolumeGroupReplication is deleted")
+			f.WaitForResourceDeleted(vgr, f.GetTimeout("operation"))
+		})
+
+		ginkgo.It("should create VGR in secondary state, transition to primary, and delete", func() {
+			ginkgo.By("Getting VolumeGroupReplicationClass configuration")
+			provisioner := f.GetVolumeGroupReplicationProvisioner()
+			gomega.Expect(provisioner).NotTo(gomega.BeEmpty(), "Provisioner must be configured")
+			parameters := f.GetVolumeGroupReplicationParameters()
+
+			ginkgo.By("Creating a VolumeGroupReplicationClass")
+			vgrc := createVolumeGroupReplicationClass(f, "test-vgrc-secondary-first", provisioner, parameters)
+
+			ginkgo.By("Creating a VolumeReplicationClass for individual volumes")
+			vrc := f.CreateVolumeReplicationClass(
+				"test-vrc-secondary-first",
+				f.GetVolumeReplicationProvisioner(),
+				f.GetVolumeReplicationParameters(),
+			)
+
+			ginkgo.By("Creating PVCs with matching labels")
+			groupLabel := "test-group-secondary-first"
+			pvc1 := createPVCWithLabels(f, "test-pvc-secondary-first-1", map[string]string{"replication-group": groupLabel})
+			pvc2 := createPVCWithLabels(f, "test-pvc-secondary-first-2", map[string]string{"replication-group": groupLabel})
+
+			ginkgo.By("Waiting for PVCs to be bound")
+			pvc1 = f.WaitForPVCBound(pvc1.Name)
+			pvc2 = f.WaitForPVCBound(pvc2.Name)
+			gomega.Expect(pvc1.Status.Phase).To(gomega.Equal(corev1.ClaimBound))
+			gomega.Expect(pvc2.Status.Phase).To(gomega.Equal(corev1.ClaimBound))
+
+			ginkgo.By("Creating VolumeGroupReplication in secondary state")
+			vgr := createVolumeGroupReplication(f, "test-vgr-secondary-first", vgrc.Name, vrc.Name, groupLabel, replicationv1alpha1.Secondary)
+
+			ginkgo.By("Waiting for VolumeGroupReplication to reach secondary state")
+			vgr = waitForVolumeGroupReplicationState(f, vgr.Name, replicationv1alpha1.SecondaryState)
+			gomega.Expect(vgr.Status.State).To(gomega.Equal(replicationv1alpha1.SecondaryState))
+			gomega.Expect(vgr.Status.Conditions).NotTo(gomega.BeEmpty(), "VolumeGroupReplication should have conditions")
+
+			ginkgo.By("Updating VolumeGroupReplication to primary state")
+			vgr.Spec.ReplicationState = replicationv1alpha1.Primary
+			updateVolumeGroupReplication(f, vgr)
+
+			ginkgo.By("Waiting for VolumeGroupReplication to reach primary state")
+			vgr = waitForVolumeGroupReplicationState(f, vgr.Name, replicationv1alpha1.PrimaryState)
+			gomega.Expect(vgr.Status.State).To(gomega.Equal(replicationv1alpha1.PrimaryState))
+			gomega.Expect(vgr.Status.Conditions).NotTo(gomega.BeEmpty(), "VolumeGroupReplication should have conditions")
+
+			ginkgo.By("Deleting VolumeGroupReplication")
+			f.DeleteResource(vgr)
+
+			ginkgo.By("Verifying VolumeGroupReplication is deleted")
+			f.WaitForResourceDeleted(vgr, f.GetTimeout("operation"))
+		})
+	})
+
+	ginkgo.Context("PVC Deletion Protection in VolumeGroup", func() {
+		ginkgo.It("should prevent PVC deletion when VGR is in primary state", func() {
+			ginkgo.By("Getting VolumeGroupReplicationClass configuration")
+			provisioner := f.GetVolumeGroupReplicationProvisioner()
+			gomega.Expect(provisioner).NotTo(gomega.BeEmpty(), "Provisioner must be configured")
+			parameters := f.GetVolumeGroupReplicationParameters()
+
+			ginkgo.By("Creating a VolumeGroupReplicationClass")
+			vgrc := createVolumeGroupReplicationClass(f, "test-vgrc-pvc-delete-primary", provisioner, parameters)
+
+			ginkgo.By("Creating a VolumeReplicationClass for individual volumes")
+			vrc := f.CreateVolumeReplicationClass(
+				"test-vrc-pvc-delete-primary",
+				f.GetVolumeReplicationProvisioner(),
+				f.GetVolumeReplicationParameters(),
+			)
+
+			ginkgo.By("Creating PVCs with matching labels")
+			groupLabel := "test-group-pvc-delete-primary"
+			pvc1 := createPVCWithLabels(f, "test-pvc-delete-primary-1", map[string]string{"replication-group": groupLabel})
+			pvc2 := createPVCWithLabels(f, "test-pvc-delete-primary-2", map[string]string{"replication-group": groupLabel})
+
+			ginkgo.By("Waiting for PVCs to be bound")
+			pvc1 = f.WaitForPVCBound(pvc1.Name)
+			pvc2 = f.WaitForPVCBound(pvc2.Name)
+
+			ginkgo.By("Creating VolumeGroupReplication in primary state")
+			vgr := createVolumeGroupReplication(f, "test-vgr-pvc-delete-primary", vgrc.Name, vrc.Name, groupLabel, replicationv1alpha1.Primary)
+			vgr = waitForVolumeGroupReplicationState(f, vgr.Name, replicationv1alpha1.PrimaryState)
+
+			ginkgo.By("Attempting to delete PVC while VGR is in primary state")
+			f.DeletePVC(pvc1.Name)
+
+			ginkgo.By("Verifying PVC is not deleted (should have finalizer)")
+			time.Sleep(5 * time.Second)
+			pvcCheck := f.GetPVC(pvc1.Name)
+			gomega.Expect(pvcCheck).NotTo(gomega.BeNil(), "PVC should still exist")
+			gomega.Expect(pvcCheck.DeletionTimestamp).NotTo(gomega.BeNil(), "PVC should have deletion timestamp")
+
+			ginkgo.By("Attempting to change VGR state while PVC deletion is pending")
+			vgr = getVolumeGroupReplication(f, vgr.Name)
+			vgr.Spec.ReplicationState = replicationv1alpha1.Secondary
+			updateVolumeGroupReplication(f, vgr)
+
+			ginkgo.By("Verifying VGR state change is processed")
+			time.Sleep(3 * time.Second)
+			vgr = getVolumeGroupReplication(f, vgr.Name)
+			gomega.Expect(vgr.Spec.ReplicationState).To(gomega.Equal(replicationv1alpha1.Secondary))
+
+			ginkgo.By("Deleting VGR to allow PVC deletion")
+			f.DeleteResource(vgr)
+
+			ginkgo.By("Verifying VGR is deleted")
+			f.WaitForResourceDeleted(vgr, f.GetTimeout("operation"))
+
+			ginkgo.By("Verifying PVC is eventually deleted after VGR removal")
+			ctx, cancel := context.WithTimeout(context.Background(), f.GetTimeout("pvc-bound"))
+			defer cancel()
+			err := wait.PollUntilContextTimeout(ctx, 2*time.Second, f.GetTimeout("pvc-bound"), true, func(ctx context.Context) (bool, error) {
+				err := f.Client.Get(ctx, client.ObjectKey{
+					Name:      pvc1.Name,
+					Namespace: f.GetNamespaceName(),
+				}, pvc1)
+				return apierrors.IsNotFound(err), nil
+			})
+			gomega.Expect(err).NotTo(gomega.HaveOccurred(), "PVC should be deleted after VGR removal")
+		})
+
+		ginkgo.It("should prevent PVC deletion when VGR is in secondary state", func() {
+			ginkgo.By("Getting VolumeGroupReplicationClass configuration")
+			provisioner := f.GetVolumeGroupReplicationProvisioner()
+			gomega.Expect(provisioner).NotTo(gomega.BeEmpty(), "Provisioner must be configured")
+			parameters := f.GetVolumeGroupReplicationParameters()
+
+			ginkgo.By("Creating a VolumeGroupReplicationClass")
+			vgrc := createVolumeGroupReplicationClass(f, "test-vgrc-pvc-delete-secondary", provisioner, parameters)
+
+			ginkgo.By("Creating a VolumeReplicationClass for individual volumes")
+			vrc := f.CreateVolumeReplicationClass(
+				"test-vrc-pvc-delete-secondary",
+				f.GetVolumeReplicationProvisioner(),
+				f.GetVolumeReplicationParameters(),
+			)
+
+			ginkgo.By("Creating PVCs with matching labels")
+			groupLabel := "test-group-pvc-delete-secondary"
+			pvc1 := createPVCWithLabels(f, "test-pvc-delete-secondary-1", map[string]string{"replication-group": groupLabel})
+			pvc2 := createPVCWithLabels(f, "test-pvc-delete-secondary-2", map[string]string{"replication-group": groupLabel})
+
+			ginkgo.By("Waiting for PVCs to be bound")
+			pvc1 = f.WaitForPVCBound(pvc1.Name)
+			pvc2 = f.WaitForPVCBound(pvc2.Name)
+
+			ginkgo.By("Creating VolumeGroupReplication in secondary state")
+			vgr := createVolumeGroupReplication(f, "test-vgr-pvc-delete-secondary", vgrc.Name, vrc.Name, groupLabel, replicationv1alpha1.Secondary)
+			vgr = waitForVolumeGroupReplicationState(f, vgr.Name, replicationv1alpha1.SecondaryState)
+
+			ginkgo.By("Attempting to delete PVC while VGR is in secondary state")
+			f.DeletePVC(pvc1.Name)
+
+			ginkgo.By("Verifying PVC is not deleted (should have finalizer)")
+			time.Sleep(5 * time.Second)
+			pvcCheck := f.GetPVC(pvc1.Name)
+			gomega.Expect(pvcCheck).NotTo(gomega.BeNil(), "PVC should still exist")
+			gomega.Expect(pvcCheck.DeletionTimestamp).NotTo(gomega.BeNil(), "PVC should have deletion timestamp")
+
+			ginkgo.By("Deleting VGR to allow PVC deletion")
+			f.DeleteResource(vgr)
+
+			ginkgo.By("Verifying VGR is deleted")
+			f.WaitForResourceDeleted(vgr, f.GetTimeout("operation"))
+
+			ginkgo.By("Verifying PVC is eventually deleted after VGR removal")
+			ctx, cancel := context.WithTimeout(context.Background(), f.GetTimeout("pvc-bound"))
+			defer cancel()
+			err := wait.PollUntilContextTimeout(ctx, 2*time.Second, f.GetTimeout("pvc-bound"), true, func(ctx context.Context) (bool, error) {
+				err := f.Client.Get(ctx, client.ObjectKey{
+					Name:      pvc1.Name,
+					Namespace: f.GetNamespaceName(),
+				}, pvc1)
+				return apierrors.IsNotFound(err), nil
+			})
+			gomega.Expect(err).NotTo(gomega.HaveOccurred(), "PVC should be deleted after VGR removal")
+		})
+	})
+
+	ginkgo.Context("Dynamic Grouping Advanced Scenarios", func() {
+		ginkgo.It("should handle multiple PVC additions and removals dynamically", func() {
+			ginkgo.By("Getting VolumeGroupReplicationClass configuration")
+			provisioner := f.GetVolumeGroupReplicationProvisioner()
+			gomega.Expect(provisioner).NotTo(gomega.BeEmpty(), "Provisioner must be configured")
+			parameters := f.GetVolumeGroupReplicationParameters()
+
+			ginkgo.By("Creating a VolumeGroupReplicationClass")
+			vgrc := createVolumeGroupReplicationClass(f, "test-vgrc-dynamic-multi", provisioner, parameters)
+
+			ginkgo.By("Creating a VolumeReplicationClass for individual volumes")
+			vrc := f.CreateVolumeReplicationClass(
+				"test-vrc-dynamic-multi",
+				f.GetVolumeReplicationProvisioner(),
+				f.GetVolumeReplicationParameters(),
+			)
+
+			ginkgo.By("Creating initial PVC with matching label")
+			groupLabel := "test-group-dynamic-multi"
+			pvc1 := createPVCWithLabels(f, "test-pvc-dynamic-multi-1", map[string]string{"replication-group": groupLabel})
+			pvc1 = f.WaitForPVCBound(pvc1.Name)
+
+			ginkgo.By("Creating VolumeGroupReplication")
+			vgr := createVolumeGroupReplication(f, "test-vgr-dynamic-multi", vgrc.Name, vrc.Name, groupLabel, replicationv1alpha1.Primary)
+			vgr = waitForVolumeGroupReplicationState(f, vgr.Name, replicationv1alpha1.PrimaryState)
+
+			ginkgo.By("Verifying initial state with 1 PVC")
+			gomega.Expect(vgr.Status.PersistentVolumeClaimsRefList).To(gomega.HaveLen(1))
+
+			ginkgo.By("Adding 3 more PVCs dynamically")
+			pvc2 := createPVCWithLabels(f, "test-pvc-dynamic-multi-2", map[string]string{"replication-group": groupLabel})
+			pvc3 := createPVCWithLabels(f, "test-pvc-dynamic-multi-3", map[string]string{"replication-group": groupLabel})
+			pvc4 := createPVCWithLabels(f, "test-pvc-dynamic-multi-4", map[string]string{"replication-group": groupLabel})
+
+			pvc2 = f.WaitForPVCBound(pvc2.Name)
+			pvc3 = f.WaitForPVCBound(pvc3.Name)
+			pvc4 = f.WaitForPVCBound(pvc4.Name)
+
+			ginkgo.By("Waiting for all PVCs to be added to the group")
+			gomega.Eventually(func() int {
+				vgr = getVolumeGroupReplication(f, vgr.Name)
+				return len(vgr.Status.PersistentVolumeClaimsRefList)
+			}, 2*time.Minute, 5*time.Second).Should(gomega.Equal(4), "Should have 4 PVCs in the group")
+
+			ginkgo.By("Removing labels from 2 PVCs")
+			pvc2 = f.GetPVC(pvc2.Name)
+			delete(pvc2.Labels, "replication-group")
+			updatePVC(f, pvc2)
+
+			pvc4 = f.GetPVC(pvc4.Name)
+			delete(pvc4.Labels, "replication-group")
+			updatePVC(f, pvc4)
+
+			ginkgo.By("Waiting for PVCs to be removed from the group")
+			gomega.Eventually(func() int {
+				vgr = getVolumeGroupReplication(f, vgr.Name)
+				return len(vgr.Status.PersistentVolumeClaimsRefList)
+			}, 2*time.Minute, 5*time.Second).Should(gomega.Equal(2), "Should have 2 PVCs remaining in the group")
+
+			ginkgo.By("Verifying correct PVCs remain")
+			pvcNames := getPVCNamesFromStatus(vgr)
+			gomega.Expect(pvcNames).To(gomega.ContainElement(pvc1.Name))
+			gomega.Expect(pvcNames).NotTo(gomega.ContainElement(pvc2.Name))
+			gomega.Expect(pvcNames).To(gomega.ContainElement(pvc3.Name))
+			gomega.Expect(pvcNames).NotTo(gomega.ContainElement(pvc4.Name))
+		})
+
+		ginkgo.It("should handle PVC addition during state transition", func() {
+			ginkgo.By("Getting VolumeGroupReplicationClass configuration")
+			provisioner := f.GetVolumeGroupReplicationProvisioner()
+			gomega.Expect(provisioner).NotTo(gomega.BeEmpty(), "Provisioner must be configured")
+			parameters := f.GetVolumeGroupReplicationParameters()
+
+			ginkgo.By("Creating a VolumeGroupReplicationClass")
+			vgrc := createVolumeGroupReplicationClass(f, "test-vgrc-dynamic-transition", provisioner, parameters)
+
+			ginkgo.By("Creating a VolumeReplicationClass for individual volumes")
+			vrc := f.CreateVolumeReplicationClass(
+				"test-vrc-dynamic-transition",
+				f.GetVolumeReplicationProvisioner(),
+				f.GetVolumeReplicationParameters(),
+			)
+
+			ginkgo.By("Creating initial PVCs with matching labels")
+			groupLabel := "test-group-dynamic-transition"
+			pvc1 := createPVCWithLabels(f, "test-pvc-dynamic-transition-1", map[string]string{"replication-group": groupLabel})
+			pvc2 := createPVCWithLabels(f, "test-pvc-dynamic-transition-2", map[string]string{"replication-group": groupLabel})
+
+			pvc1 = f.WaitForPVCBound(pvc1.Name)
+			pvc2 = f.WaitForPVCBound(pvc2.Name)
+
+			ginkgo.By("Creating VolumeGroupReplication in primary state")
+			vgr := createVolumeGroupReplication(f, "test-vgr-dynamic-transition", vgrc.Name, vrc.Name, groupLabel, replicationv1alpha1.Primary)
+			vgr = waitForVolumeGroupReplicationState(f, vgr.Name, replicationv1alpha1.PrimaryState)
+
+			ginkgo.By("Initiating state transition to secondary")
+			vgr.Spec.ReplicationState = replicationv1alpha1.Secondary
+			updateVolumeGroupReplication(f, vgr)
+
+			ginkgo.By("Adding a new PVC during state transition")
+			pvc3 := createPVCWithLabels(f, "test-pvc-dynamic-transition-3", map[string]string{"replication-group": groupLabel})
+			pvc3 = f.WaitForPVCBound(pvc3.Name)
+
+			ginkgo.By("Waiting for VGR to reach secondary state")
+			vgr = waitForVolumeGroupReplicationState(f, vgr.Name, replicationv1alpha1.SecondaryState)
+
+			ginkgo.By("Verifying all 3 PVCs are in the group after transition")
+			gomega.Eventually(func() int {
+				vgr = getVolumeGroupReplication(f, vgr.Name)
+				return len(vgr.Status.PersistentVolumeClaimsRefList)
+			}, 2*time.Minute, 5*time.Second).Should(gomega.Equal(3), "Should have 3 PVCs in the group")
+
+			pvcNames := getPVCNamesFromStatus(vgr)
+			gomega.Expect(pvcNames).To(gomega.ContainElement(pvc1.Name))
+			gomega.Expect(pvcNames).To(gomega.ContainElement(pvc2.Name))
+			gomega.Expect(pvcNames).To(gomega.ContainElement(pvc3.Name))
+		})
+	})
 })
 
 // Helper functions

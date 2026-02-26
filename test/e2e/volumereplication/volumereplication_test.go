@@ -21,12 +21,15 @@ import (
 	"flag"
 	"fmt"
 	"testing"
+	"time"
 
 	ginkgo "github.com/onsi/ginkgo/v2"
 	gomega "github.com/onsi/gomega"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
-
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/wait"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	replicationv1alpha1 "github.com/csi-addons/kubernetes-csi-addons/api/replication.storage/v1alpha1"
 	"github.com/csi-addons/kubernetes-csi-addons/test/e2e/config"
@@ -83,8 +86,8 @@ var _ = ginkgo.Describe("VolumeReplication", ginkgo.Ordered, func() {
 		}
 	})
 
-	ginkgo.Context("Primary-Secondary Replication", func() {
-		ginkgo.It("should promote volume to primary", func() {
+	ginkgo.Context("Primary-Secondary Replication Lifecycle", func() {
+		ginkgo.It("should create VR in primary state, transition to secondary, back to primary, and delete", func() {
 			ginkgo.By("Getting VolumeReplicationClass configuration")
 			provisioner := f.GetVolumeReplicationProvisioner()
 			gomega.Expect(provisioner).NotTo(gomega.BeEmpty(), "Provisioner must be configured")
@@ -92,19 +95,19 @@ var _ = ginkgo.Describe("VolumeReplication", ginkgo.Ordered, func() {
 
 			ginkgo.By("Creating a VolumeReplicationClass")
 			vrc := f.CreateVolumeReplicationClass(
-				"test-vrc",
+				"test-vrc-lifecycle",
 				provisioner,
 				parameters,
 			)
 
 			ginkgo.By("Creating a PVC")
-			pvc := f.CreatePVC("test-pvc", "", f.GetVolumeReplicationStorageClassName())
+			pvc := f.CreatePVC("test-pvc-lifecycle", "", f.GetVolumeReplicationStorageClassName())
 			pvc = f.WaitForPVCBound(pvc.Name)
 			gomega.Expect(pvc.Status.Phase).To(gomega.Equal(corev1.ClaimBound))
 
 			ginkgo.By("Creating a VolumeReplication in primary state")
 			vr := f.CreateVolumeReplication(
-				"test-vr",
+				"test-vr-lifecycle",
 				pvc.Name,
 				vrc.Name,
 				replicationv1alpha1.Primary,
@@ -113,65 +116,7 @@ var _ = ginkgo.Describe("VolumeReplication", ginkgo.Ordered, func() {
 			ginkgo.By("Waiting for VolumeReplication to reach primary state")
 			vr = f.WaitForVolumeReplicationState(vr.Name, replicationv1alpha1.PrimaryState)
 			gomega.Expect(vr.Status.State).To(gomega.Equal(replicationv1alpha1.PrimaryState))
-		})
-
-		ginkgo.It("should demote volume to secondary", func() {
-			ginkgo.By("Getting VolumeReplicationClass configuration")
-			provisioner := f.GetVolumeReplicationProvisioner()
-			gomega.Expect(provisioner).NotTo(gomega.BeEmpty(), "Provisioner must be configured")
-			parameters := f.GetVolumeReplicationParameters()
-
-			ginkgo.By("Creating a VolumeReplicationClass")
-			vrc := f.CreateVolumeReplicationClass(
-				"test-vrc-secondary",
-				provisioner,
-				parameters,
-			)
-
-			ginkgo.By("Creating a PVC")
-			pvc := f.CreatePVC("test-pvc-secondary", "", f.GetVolumeReplicationStorageClassName())
-			pvc = f.WaitForPVCBound(pvc.Name)
-
-			ginkgo.By("Creating a VolumeReplication in secondary state")
-			vr := f.CreateVolumeReplication(
-				"test-vr-secondary",
-				pvc.Name,
-				vrc.Name,
-				replicationv1alpha1.Secondary,
-			)
-
-			ginkgo.By("Waiting for VolumeReplication to reach secondary state")
-			vr = f.WaitForVolumeReplicationState(vr.Name, replicationv1alpha1.SecondaryState)
-			gomega.Expect(vr.Status.State).To(gomega.Equal(replicationv1alpha1.SecondaryState))
-		})
-
-		ginkgo.It("should transition from primary to secondary", func() {
-			ginkgo.By("Getting VolumeReplicationClass configuration")
-			provisioner := f.GetVolumeReplicationProvisioner()
-			gomega.Expect(provisioner).NotTo(gomega.BeEmpty(), "Provisioner must be configured")
-			parameters := f.GetVolumeReplicationParameters()
-
-			ginkgo.By("Creating a VolumeReplicationClass")
-			vrc := f.CreateVolumeReplicationClass(
-				"test-vrc-transition",
-				provisioner,
-				parameters,
-			)
-
-			ginkgo.By("Creating a PVC")
-			pvc := f.CreatePVC("test-pvc-transition", "", f.GetVolumeReplicationStorageClassName())
-			pvc = f.WaitForPVCBound(pvc.Name)
-
-			ginkgo.By("Creating a VolumeReplication in primary state")
-			vr := f.CreateVolumeReplication(
-				"test-vr-transition",
-				pvc.Name,
-				vrc.Name,
-				replicationv1alpha1.Primary,
-			)
-
-			ginkgo.By("Waiting for VolumeReplication to reach primary state")
-			vr = f.WaitForVolumeReplicationState(vr.Name, replicationv1alpha1.PrimaryState)
+			gomega.Expect(vr.Status.Conditions).NotTo(gomega.BeEmpty(), "VolumeReplication should have conditions")
 
 			ginkgo.By("Updating VolumeReplication to secondary state")
 			vr.Spec.ReplicationState = replicationv1alpha1.Secondary
@@ -180,6 +125,278 @@ var _ = ginkgo.Describe("VolumeReplication", ginkgo.Ordered, func() {
 			ginkgo.By("Waiting for VolumeReplication to reach secondary state")
 			vr = f.WaitForVolumeReplicationState(vr.Name, replicationv1alpha1.SecondaryState)
 			gomega.Expect(vr.Status.State).To(gomega.Equal(replicationv1alpha1.SecondaryState))
+			gomega.Expect(vr.Status.Conditions).NotTo(gomega.BeEmpty(), "VolumeReplication should have conditions")
+
+			ginkgo.By("Updating VolumeReplication back to primary state")
+			vr.Spec.ReplicationState = replicationv1alpha1.Primary
+			f.UpdateVolumeReplication(vr)
+
+			ginkgo.By("Waiting for VolumeReplication to reach primary state again")
+			vr = f.WaitForVolumeReplicationState(vr.Name, replicationv1alpha1.PrimaryState)
+			gomega.Expect(vr.Status.State).To(gomega.Equal(replicationv1alpha1.PrimaryState))
+
+			ginkgo.By("Deleting VolumeReplication")
+			f.DeleteResource(vr)
+
+			ginkgo.By("Verifying VolumeReplication is deleted")
+			ctx, cancel := context.WithTimeout(context.Background(), f.GetTimeout("operation"))
+			defer cancel()
+			err := wait.PollUntilContextTimeout(ctx, 2*time.Second, f.GetTimeout("operation"), true, func(ctx context.Context) (bool, error) {
+				err := f.Client.Get(ctx, client.ObjectKey{
+					Name:      vr.Name,
+					Namespace: f.GetNamespaceName(),
+				}, vr)
+				return apierrors.IsNotFound(err), nil
+			})
+			gomega.Expect(err).NotTo(gomega.HaveOccurred(), "VolumeReplication should be deleted")
+		})
+
+		ginkgo.It("should create VR in secondary state, transition to primary, and delete", func() {
+			ginkgo.By("Getting VolumeReplicationClass configuration")
+			provisioner := f.GetVolumeReplicationProvisioner()
+			gomega.Expect(provisioner).NotTo(gomega.BeEmpty(), "Provisioner must be configured")
+			parameters := f.GetVolumeReplicationParameters()
+
+			ginkgo.By("Creating a VolumeReplicationClass")
+			vrc := f.CreateVolumeReplicationClass(
+				"test-vrc-secondary-first",
+				provisioner,
+				parameters,
+			)
+
+			ginkgo.By("Creating a PVC")
+			pvc := f.CreatePVC("test-pvc-secondary-first", "", f.GetVolumeReplicationStorageClassName())
+			pvc = f.WaitForPVCBound(pvc.Name)
+			gomega.Expect(pvc.Status.Phase).To(gomega.Equal(corev1.ClaimBound))
+
+			ginkgo.By("Creating a VolumeReplication in secondary state")
+			vr := f.CreateVolumeReplication(
+				"test-vr-secondary-first",
+				pvc.Name,
+				vrc.Name,
+				replicationv1alpha1.Secondary,
+			)
+
+			ginkgo.By("Waiting for VolumeReplication to reach secondary state")
+			vr = f.WaitForVolumeReplicationState(vr.Name, replicationv1alpha1.SecondaryState)
+			gomega.Expect(vr.Status.State).To(gomega.Equal(replicationv1alpha1.SecondaryState))
+			gomega.Expect(vr.Status.Conditions).NotTo(gomega.BeEmpty(), "VolumeReplication should have conditions")
+
+			ginkgo.By("Updating VolumeReplication to primary state")
+			vr.Spec.ReplicationState = replicationv1alpha1.Primary
+			f.UpdateVolumeReplication(vr)
+
+			ginkgo.By("Waiting for VolumeReplication to reach primary state")
+			vr = f.WaitForVolumeReplicationState(vr.Name, replicationv1alpha1.PrimaryState)
+			gomega.Expect(vr.Status.State).To(gomega.Equal(replicationv1alpha1.PrimaryState))
+			gomega.Expect(vr.Status.Conditions).NotTo(gomega.BeEmpty(), "VolumeReplication should have conditions")
+
+			ginkgo.By("Deleting VolumeReplication")
+			f.DeleteResource(vr)
+
+			ginkgo.By("Verifying VolumeReplication is deleted")
+			ctx, cancel := context.WithTimeout(context.Background(), f.GetTimeout("operation"))
+			defer cancel()
+			err := wait.PollUntilContextTimeout(ctx, 2*time.Second, f.GetTimeout("operation"), true, func(ctx context.Context) (bool, error) {
+				err := f.Client.Get(ctx, client.ObjectKey{
+					Name:      vr.Name,
+					Namespace: f.GetNamespaceName(),
+				}, vr)
+				return apierrors.IsNotFound(err), nil
+			})
+			gomega.Expect(err).NotTo(gomega.HaveOccurred(), "VolumeReplication should be deleted")
+		})
+	})
+
+	ginkgo.Context("PVC Deletion Protection", func() {
+		ginkgo.It("should prevent PVC deletion when VR is in primary state", func() {
+			ginkgo.By("Getting VolumeReplicationClass configuration")
+			provisioner := f.GetVolumeReplicationProvisioner()
+			gomega.Expect(provisioner).NotTo(gomega.BeEmpty(), "Provisioner must be configured")
+			parameters := f.GetVolumeReplicationParameters()
+
+			ginkgo.By("Creating a VolumeReplicationClass")
+			vrc := f.CreateVolumeReplicationClass(
+				"test-vrc-pvc-delete-primary",
+				provisioner,
+				parameters,
+			)
+
+			ginkgo.By("Creating a PVC")
+			pvc := f.CreatePVC("test-pvc-delete-primary", "", f.GetVolumeReplicationStorageClassName())
+			pvc = f.WaitForPVCBound(pvc.Name)
+
+			ginkgo.By("Creating a VolumeReplication in primary state")
+			vr := f.CreateVolumeReplication(
+				"test-vr-pvc-delete-primary",
+				pvc.Name,
+				vrc.Name,
+				replicationv1alpha1.Primary,
+			)
+			vr = f.WaitForVolumeReplicationState(vr.Name, replicationv1alpha1.PrimaryState)
+
+			ginkgo.By("Attempting to delete PVC while VR is in primary state")
+			f.DeletePVC(pvc.Name)
+
+			ginkgo.By("Verifying PVC is not deleted (should have finalizer)")
+			time.Sleep(5 * time.Second)
+			pvcCheck := f.GetPVC(pvc.Name)
+			gomega.Expect(pvcCheck).NotTo(gomega.BeNil(), "PVC should still exist")
+			gomega.Expect(pvcCheck.DeletionTimestamp).NotTo(gomega.BeNil(), "PVC should have deletion timestamp")
+
+			ginkgo.By("Attempting to change VR state while PVC deletion is pending")
+			vr = f.GetVolumeReplication(vr.Name)
+			vr.Spec.ReplicationState = replicationv1alpha1.Secondary
+			f.UpdateVolumeReplication(vr)
+
+			ginkgo.By("Verifying VR state change is processed")
+			time.Sleep(3 * time.Second)
+			vr = f.GetVolumeReplication(vr.Name)
+			gomega.Expect(vr.Spec.ReplicationState).To(gomega.Equal(replicationv1alpha1.Secondary))
+
+			ginkgo.By("Attempting to delete VR while PVC deletion is pending")
+			f.DeleteResource(vr)
+
+			ginkgo.By("Verifying VR deletion is processed")
+			ctx, cancel := context.WithTimeout(context.Background(), f.GetTimeout("operation"))
+			defer cancel()
+			err := wait.PollUntilContextTimeout(ctx, 2*time.Second, f.GetTimeout("operation"), true, func(ctx context.Context) (bool, error) {
+				err := f.Client.Get(ctx, client.ObjectKey{
+					Name:      vr.Name,
+					Namespace: f.GetNamespaceName(),
+				}, vr)
+				return apierrors.IsNotFound(err), nil
+			})
+			gomega.Expect(err).NotTo(gomega.HaveOccurred(), "VolumeReplication should be deleted")
+
+			ginkgo.By("Verifying PVC is eventually deleted after VR removal")
+			ctx, cancel = context.WithTimeout(context.Background(), f.GetTimeout("pvc-bound"))
+			defer cancel()
+			err = wait.PollUntilContextTimeout(ctx, 2*time.Second, f.GetTimeout("pvc-bound"), true, func(ctx context.Context) (bool, error) {
+				err := f.Client.Get(ctx, client.ObjectKey{
+					Name:      pvc.Name,
+					Namespace: f.GetNamespaceName(),
+				}, pvc)
+				return apierrors.IsNotFound(err), nil
+			})
+			gomega.Expect(err).NotTo(gomega.HaveOccurred(), "PVC should be deleted after VR removal")
+		})
+
+		ginkgo.It("should prevent PVC deletion when VR is in secondary state", func() {
+			ginkgo.By("Getting VolumeReplicationClass configuration")
+			provisioner := f.GetVolumeReplicationProvisioner()
+			gomega.Expect(provisioner).NotTo(gomega.BeEmpty(), "Provisioner must be configured")
+			parameters := f.GetVolumeReplicationParameters()
+
+			ginkgo.By("Creating a VolumeReplicationClass")
+			vrc := f.CreateVolumeReplicationClass(
+				"test-vrc-pvc-delete-secondary",
+				provisioner,
+				parameters,
+			)
+
+			ginkgo.By("Creating a PVC")
+			pvc := f.CreatePVC("test-pvc-delete-secondary", "", f.GetVolumeReplicationStorageClassName())
+			pvc = f.WaitForPVCBound(pvc.Name)
+
+			ginkgo.By("Creating a VolumeReplication in secondary state")
+			vr := f.CreateVolumeReplication(
+				"test-vr-pvc-delete-secondary",
+				pvc.Name,
+				vrc.Name,
+				replicationv1alpha1.Secondary,
+			)
+			vr = f.WaitForVolumeReplicationState(vr.Name, replicationv1alpha1.SecondaryState)
+
+			ginkgo.By("Attempting to delete PVC while VR is in secondary state")
+			f.DeletePVC(pvc.Name)
+
+			ginkgo.By("Verifying PVC is not deleted (should have finalizer)")
+			time.Sleep(5 * time.Second)
+			pvcCheck := f.GetPVC(pvc.Name)
+			gomega.Expect(pvcCheck).NotTo(gomega.BeNil(), "PVC should still exist")
+			gomega.Expect(pvcCheck.DeletionTimestamp).NotTo(gomega.BeNil(), "PVC should have deletion timestamp")
+
+			ginkgo.By("Deleting VR to allow PVC deletion")
+			f.DeleteResource(vr)
+
+			ginkgo.By("Verifying VR is deleted")
+			ctx, cancel := context.WithTimeout(context.Background(), f.GetTimeout("operation"))
+			defer cancel()
+			err := wait.PollUntilContextTimeout(ctx, 2*time.Second, f.GetTimeout("operation"), true, func(ctx context.Context) (bool, error) {
+				err := f.Client.Get(ctx, client.ObjectKey{
+					Name:      vr.Name,
+					Namespace: f.GetNamespaceName(),
+				}, vr)
+				return apierrors.IsNotFound(err), nil
+			})
+			gomega.Expect(err).NotTo(gomega.HaveOccurred(), "VolumeReplication should be deleted")
+
+			ginkgo.By("Verifying PVC is eventually deleted after VR removal")
+			ctx, cancel = context.WithTimeout(context.Background(), f.GetTimeout("pvc-bound"))
+			defer cancel()
+			err = wait.PollUntilContextTimeout(ctx, 2*time.Second, f.GetTimeout("pvc-bound"), true, func(ctx context.Context) (bool, error) {
+				err := f.Client.Get(ctx, client.ObjectKey{
+					Name:      pvc.Name,
+					Namespace: f.GetNamespaceName(),
+				}, pvc)
+				return apierrors.IsNotFound(err), nil
+			})
+			gomega.Expect(err).NotTo(gomega.HaveOccurred(), "PVC should be deleted after VR removal")
+		})
+	})
+
+	ginkgo.Context("Error Handling", func() {
+		ginkgo.It("should fail to enable mirroring on non-existing PVC", func() {
+			ginkgo.By("Getting VolumeReplicationClass configuration")
+			provisioner := f.GetVolumeReplicationProvisioner()
+			gomega.Expect(provisioner).NotTo(gomega.BeEmpty(), "Provisioner must be configured")
+			parameters := f.GetVolumeReplicationParameters()
+
+			ginkgo.By("Creating a VolumeReplicationClass")
+			vrc := f.CreateVolumeReplicationClass(
+				"test-vrc-nonexistent-pvc",
+				provisioner,
+				parameters,
+			)
+
+			ginkgo.By("Attempting to create VolumeReplication for non-existent PVC")
+			vr := &replicationv1alpha1.VolumeReplication{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-vr-nonexistent-pvc",
+					Namespace: f.GetNamespaceName(),
+				},
+				Spec: replicationv1alpha1.VolumeReplicationSpec{
+					VolumeReplicationClass: vrc.Name,
+					ReplicationState:       replicationv1alpha1.Primary,
+					DataSource: corev1.TypedLocalObjectReference{
+						Kind: "PersistentVolumeClaim",
+						Name: "non-existent-pvc",
+					},
+				},
+			}
+
+			ctx, cancel := context.WithTimeout(context.Background(), f.GetTimeout("operation"))
+			defer cancel()
+
+			err := f.Client.Create(ctx, vr)
+			gomega.Expect(err).NotTo(gomega.HaveOccurred(), "VolumeReplication creation should succeed")
+			f.TrackResource(vr)
+
+			ginkgo.By("Verifying VolumeReplication does not reach ready state")
+			time.Sleep(10 * time.Second)
+			vr = f.GetVolumeReplication(vr.Name)
+			gomega.Expect(vr.Status.State).NotTo(gomega.Equal(replicationv1alpha1.PrimaryState), "VolumeReplication should not reach primary state with non-existent PVC")
+
+			ginkgo.By("Checking for error conditions")
+			hasErrorCondition := false
+			for _, condition := range vr.Status.Conditions {
+				if condition.Type == replicationv1alpha1.ConditionCompleted && condition.Status != "True" {
+					hasErrorCondition = true
+					break
+				}
+			}
+			gomega.Expect(hasErrorCondition).To(gomega.BeTrue(), "VolumeReplication should have error condition")
 		})
 	})
 })
